@@ -3,6 +3,7 @@ library flutter_3d_obj;
 import 'dart:io';
 import 'dart:math' as Math;
 import 'dart:ui';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
@@ -19,7 +20,14 @@ class Object3D extends StatefulWidget {
     this.angleX,
     this.angleY,
     this.angleZ,
+    this.xFixed,
+    this.yFixed,
+    this.zFixed,
     this.zoom = 100.0,
+    this.brightness = 1.0,
+    this.adaptiveBrightness = -1,
+    this.allowRotateX = true,
+    this.allowRotateY = true,
   });
 
   final Size size;
@@ -29,6 +37,13 @@ class Object3D extends StatefulWidget {
   final double angleX;
   final double angleY;
   final double angleZ;
+  final double xFixed;
+  final double yFixed;
+  final double zFixed;
+  final double brightness;
+  final int adaptiveBrightness;
+  final bool allowRotateX;
+  final bool allowRotateY;
 
   @override
   _Object3DState createState() => new _Object3DState();
@@ -53,16 +68,22 @@ class _Object3DState extends State<Object3D> {
       });
     }
 
-    useInternal = !(widget.angleX != null || widget.angleY != null || widget.angleZ != null);
+    angleX = widget.angleX ?? 0;
+    angleY = widget.angleY ?? 0;
+    angleZ = widget.angleZ ?? 0;
+
+    useInternal = true;
+
+    //useInternal = !(widget.angleX != null || widget.angleY != null || widget.angleZ != null);
     super.initState();
   }
 
 
   bool useInternal;
 
-  double angleX = 15.0;
-  double angleY = 45.0;
-  double angleZ = 0.0;
+  double angleX = 0.0;
+  double angleY = 135.0;
+  double angleZ = 90.0;
 
   double _previousX = 0.0;
   double _previousY = 0.0;
@@ -76,12 +97,12 @@ class _Object3DState extends State<Object3D> {
     if (angleY > 360.0) {
       angleY = angleY - 360.0;
     }
-    if (_previousY > data.globalPosition.dx) {
+    if (_previousY > data.globalPosition.dx && widget.allowRotateX) {
       setState(() {
         angleY = angleY - 1;
       });
     }
-    if (_previousY < data.globalPosition.dx) {
+    if (_previousY < data.globalPosition.dx && widget.allowRotateX) {
       setState(() {
         angleY = angleY + 1;
       });
@@ -91,12 +112,12 @@ class _Object3DState extends State<Object3D> {
     if (angleX > 360.0) {
       angleX = angleX - 360.0;
     }
-    if (_previousX > data.globalPosition.dy) {
+    if (_previousX > data.globalPosition.dy && widget.allowRotateY) {
       setState(() {
         angleX = angleX - 1;
       });
     }
-    if (_previousX < data.globalPosition.dy) {
+    if (_previousX < data.globalPosition.dy && widget.allowRotateY) {
       setState(() {
         angleX = angleX + 1;
       });
@@ -114,10 +135,12 @@ class _Object3DState extends State<Object3D> {
 
   @override
   Widget build(BuildContext context) {
+    print(widget.adaptiveBrightness);
     return new GestureDetector(
       child: new CustomPaint(
-        painter: new _ObjectPainter(widget.size, object, useInternal ? angleX : widget.angleX,
-            useInternal ? angleY : widget.angleY, useInternal ? angleZ : widget.angleZ, widget.zoom),
+        painter: new _ObjectPainter(size: widget.size, object: object, angleX: useInternal ? angleX : widget.angleX,
+            angleY: useInternal ? angleY : widget.angleY, angleZ: useInternal ? angleZ : widget.angleZ,
+            zoomFactor: widget.zoom, brightness: widget.brightness, adaptiveBrightness: widget.adaptiveBrightness),
         size: widget.size,
       ),
       onHorizontalDragUpdate: _updateY,
@@ -127,7 +150,7 @@ class _Object3DState extends State<Object3D> {
 }
 
 class _ObjectPainter extends CustomPainter {
-  double _zoomFactor = 100.0;
+  double zoomFactor = 100.0;
 
 //  final double _rotation = 5.0; // in degrees
   double _translation = 0.1 / 100;
@@ -141,6 +164,7 @@ class _ObjectPainter extends CustomPainter {
 
   List<Vector3> vertices;
   List<dynamic> faces;
+  List<Color> colors;
   V.Matrix4 T;
   Vector3 camera;
   Vector3 light;
@@ -153,23 +177,33 @@ class _ObjectPainter extends CustomPainter {
 
   Size size;
 
-  _ObjectPainter(this.size, this.object, this.angleX, this.angleY, this.angleZ, this._zoomFactor) {
-    _translation *= _zoomFactor;
+  double brightness;
+  int adaptiveBrightness;
+  double adaptiveBrightnessCoefficient;
+
+  _ObjectPainter({this.size, this.object, this.angleX, this.angleY, this.angleZ, this.zoomFactor, this.brightness, this.adaptiveBrightness}) {
+    _translation *= zoomFactor;
     camera = new Vector3(0.0, 0.0, 0.0);
-    light = new Vector3(0.0, 0.0, 100.0);
+    light = new Vector3(100.0, 100.0, 300.0);
     color = new Color.fromARGB(255, 255, 255, 255);
     _viewPortX = (size.width / 2).toDouble();
     _viewPortY = (size.height / 2).toDouble();
+    print("adaptivebrightness: $adaptiveBrightness");
   }
 
   Map _parseObjString(String objString) {
     List vertices = <Vector3>[];
     List faces = <List<int>>[];
     List<int> face = [];
+    List<Color> colors = [];
 
     List lines = objString.split("\n");
 
     Vector3 vertex;
+
+    int i = 0;
+    int adaptiveBrightnessCount = 0;
+    int adaptiveBrightnessTotal = 0;
 
     lines.forEach((dynamic line) {
       String lline = line;
@@ -182,6 +216,24 @@ class _ObjectPainter extends CustomPainter {
 
         vertices.add(vertex);
 
+        if(chars.length >= 7){
+          int r = (double.parse(chars[4]) * 255).round();
+          int g = (double.parse(chars[5]) * 255).round();
+          int b = (double.parse(chars[6]) * 255).round();
+
+          colors.add(Color.fromARGB(255, r, g, b));
+
+          //print("adaptiveBrightness: $adaptiveBrightness, i:$i ${i%100 == 0}");
+
+          if(adaptiveBrightness >= 0 && i % 100 == 0){
+            //print("max ${Math.max(Math.max(r, g), b)}");
+            adaptiveBrightnessTotal += Math.max(Math.max(r, g), b);
+            //adaptiveBrightnessTotal += (r+g+b) ~/ 3;
+            adaptiveBrightnessCount++;
+          }
+        }
+        i++;
+
         // face
       } else if (chars[0] == "f") {
         for (var i = 1; i < chars.length; i++) {
@@ -193,7 +245,14 @@ class _ObjectPainter extends CustomPainter {
       }
     });
 
-    return {'vertices': vertices, 'faces': faces};
+    if(adaptiveBrightness >= 0){
+      print("adaptiveBrightnessTotal: $adaptiveBrightnessTotal, adaptiveBrightnessCount: $adaptiveBrightnessCount");
+      print("average brightness of model: ${(adaptiveBrightnessTotal / adaptiveBrightnessCount)}");
+      adaptiveBrightnessCoefficient = adaptiveBrightness / (adaptiveBrightnessTotal / adaptiveBrightnessCount);
+      print("adaptive brightness coefficient: $adaptiveBrightnessCoefficient");
+    }
+
+    return {'vertices': vertices, 'faces': faces, 'colors': colors};
   }
 
   bool _shouldDrawFace(List face) {
@@ -225,7 +284,7 @@ class _ObjectPainter extends CustomPainter {
 
   Vector3 _calcDefaultVertex(Vector3 vertex) {
     T = new V.Matrix4.translationValues(_viewPortX, _viewPortY, zero);
-    T.scale(_zoomFactor, -_zoomFactor);
+    T.scale(zoomFactor, -zoomFactor);
 
     T.rotateX(_degreeToRadian(angleX != null ? angleX : 0.0));
     T.rotateY(_degreeToRadian(angleY != null ? angleY : 0.0));
@@ -238,7 +297,7 @@ class _ObjectPainter extends CustomPainter {
     return degree * (Math.pi / 180.0);
   }
 
-  List<dynamic> _drawFace(List<Vector3> verticesToDraw, List face) {
+  List<dynamic> _drawFace(List<Vector3> verticesToDraw, List face, {Color color, double brightness = 1.0, Canvas canvas}) {
     List<dynamic> list = <dynamic>[];
     Paint paint = new Paint();
     Vector3 normalizedLight = new Vector3.copy(light).normalized();
@@ -254,18 +313,27 @@ class _ObjectPainter extends CustomPainter {
       koef = 0.0;
     }
 
-    Color newColor = new Color.fromARGB(255, 0, 0, 0);
+    //print(color);
+    Color newColor = color;// ?? Color.fromARGB(255, 0, 0, 0);
 
     Path path = new Path();
+    koef += (brightness - 1.0);
 
-    newColor = newColor.withRed((color.red.toDouble() * koef).round());
-    newColor = newColor.withGreen((color.green.toDouble() * koef).round());
-    newColor = newColor.withBlue((color.blue.toDouble() * koef).round());
+    if(adaptiveBrightnessCoefficient != null) koef *= adaptiveBrightnessCoefficient;
+
+    newColor = newColor.withRed(Math.min((color.red.toDouble() * koef).round(), 255));
+    newColor = newColor.withGreen(Math.min((color.green.toDouble() * koef).round(), 255));
+    newColor = newColor.withBlue(Math.min((color.blue.toDouble() * koef).round(), 255));
     paint.color = newColor;
     paint.style = PaintingStyle.fill;
 
     bool lastPoint = false;
     double firstVertexX, firstVertexY, secondVertexX, secondVertexY;
+
+    Float32List positions2D = Float32List(face.length * 2);
+    Int32List colors = Int32List.fromList(List.filled(face.length, newColor.value));
+    
+    //Vertices.raw(VertexMode.triangles, positions)
 
     for (int i = 0; i < face.length; i++) {
       if (i + 1 == face.length) {
@@ -282,19 +350,28 @@ class _ObjectPainter extends CustomPainter {
         firstVertexY = verticesToDraw[face[i] - 1][1].toDouble();
         secondVertexX = verticesToDraw[face[i + 1] - 1][0].toDouble();
         secondVertexY = verticesToDraw[face[i + 1] - 1][1].toDouble();
+        positions2D[(i+1) * 2 + 0] = secondVertexX;
+        positions2D[(i+1) * 2 + 1] = secondVertexY;
       }
 
       if (i == 0) {
+        positions2D[0] = firstVertexX;
+        positions2D[1] = firstVertexY;
         path.moveTo(firstVertexX, firstVertexY);
       }
 
       path.lineTo(secondVertexX, secondVertexY);
+      // positions2D[(i+1) * 2 + 0] = secondVertexX;
+      // positions2D[(i+1) * 2 + 1] = secondVertexY;
     }
     var z = 0.0;
     face.forEach((dynamic x) {
       int xx = x;
       z += verticesToDraw[xx - 1].z;
     });
+
+    Vertices vv = Vertices.raw(VertexMode.triangles, positions2D, colors: colors);
+    if(canvas != null) canvas.drawVertices(vv, BlendMode.multiply, paint);
 
     path.close();
     list.add(path);
@@ -307,6 +384,7 @@ class _ObjectPainter extends CustomPainter {
     Map parsedFile = _parseObjString(object);
     vertices = parsedFile["vertices"];
     faces = parsedFile["faces"];
+    colors = parsedFile["colors"];
 
     List<Vector3> verticesToDraw = [];
     vertices.forEach((vertex) {
@@ -333,11 +411,17 @@ class _ObjectPainter extends CustomPainter {
     }
     avgOfZ.sort((Map a, Map b) => a['z'].compareTo(b['z']));
 
+    print(colors.length);
+    print(faces.length);
+    print(vertices.length);
+
     for (int i = 0; i < faces.length; i++) {
       List face = faces[avgOfZ[i]["index"]];
       if (_shouldDrawFace(face) || true) {
-        final List<dynamic> faceProp = _drawFace(verticesToDraw, face);
+        Color c = colors[face[0] - 1];
+        final List<dynamic> faceProp = _drawFace(verticesToDraw, face, color: c, brightness: brightness);
         canvas.drawPath(faceProp[0], faceProp[1]);
+        //canvas.drawVertices(vertices, blendMode, paint);
       }
     }
   }
@@ -348,5 +432,5 @@ class _ObjectPainter extends CustomPainter {
       old.angleX != angleX ||
       old.angleY != angleY ||
       old.angleZ != angleZ ||
-      old._zoomFactor != _zoomFactor;
+      old.zoomFactor != zoomFactor;
 }
